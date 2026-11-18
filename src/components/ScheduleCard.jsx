@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import html2canvas from 'html2canvas';
-import { Download, Loader2, Check } from 'lucide-react';
+import { Download, Loader2, Check, Mail, Send, AlertCircle } from 'lucide-react';
 
 /**
  * Componente visual de la Tarjeta de Programación de un conductor.
@@ -13,10 +13,17 @@ const ScheduleCard = ({
   globalLocation,
   useExcelLocation,
   registerCardRef,
+  driverEmail,
+  onEmailChange,
+  onSendEmail,
 }) => {
   const cardRef = useRef(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloaded, setDownloaded] = useState(false);
+
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
+  const [emailSent, setEmailSent] = useState(false);
+  const [emailError, setEmailError] = useState('');
 
   // Determinar el lugar a mostrar en el título y en la columna LUGAR
   const resolvedLocation =
@@ -31,7 +38,7 @@ const ScheduleCard = ({
       : `(${dateRange})`
     : '(Sin fechas definidas)';
 
-  // Registrar referencia en el componente padre para permitir la descarga masiva en ZIP
+  // Registrar referencia en el componente padre para permitir la descarga masiva en ZIP o envío masivo
   const setRefs = (element) => {
     cardRef.current = element;
     if (registerCardRef) {
@@ -74,10 +81,51 @@ const ScheduleCard = ({
     }
   };
 
+  const handleSendSingleEmail = async (e) => {
+    e.preventDefault();
+    setEmailError('');
+
+    const targetEmail = (driverEmail || '').trim();
+    if (!targetEmail || !targetEmail.includes('@')) {
+      setEmailError('Ingresa un correo electrónico válido para este conductor.');
+      return;
+    }
+
+    if (!cardRef.current || isSendingEmail) return;
+    setIsSendingEmail(true);
+
+    try {
+      const canvas = await html2canvas(cardRef.current, {
+        scale: 2,
+        backgroundColor: '#ffffff',
+        useCORS: true,
+        logging: false,
+        windowWidth: 1200,
+      });
+
+      const imageBase64 = canvas.toDataURL('image/png');
+
+      await onSendEmail({
+        to: targetEmail,
+        driver,
+        location: resolvedLocation,
+        imageBase64,
+      });
+
+      setEmailSent(true);
+      setTimeout(() => setEmailSent(false), 3500);
+    } catch (err) {
+      setEmailError(err.message || 'No se pudo enviar el correo.');
+    } finally {
+      setIsSendingEmail(false);
+    }
+  };
+
   return (
     <div className="flex flex-col bg-slate-100 rounded-xl border border-slate-200 shadow-sm overflow-hidden">
       {/* Barra superior de acciones de la tarjeta (No sale en el PNG) */}
-      <div className="flex items-center justify-between px-4 py-3 bg-white border-b border-slate-200">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 px-4 py-3 bg-white border-b border-slate-200">
+        {/* Datos del conductor */}
         <div className="flex items-center gap-2.5 min-w-0">
           <span className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-bold bg-lime-300 text-slate-900 border border-lime-400">
             #{driver.codigo}
@@ -92,33 +140,91 @@ const ScheduleCard = ({
           )}
         </div>
 
-        <button
-          onClick={handleDownloadSingle}
-          disabled={isDownloading}
-          className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all shadow-sm shrink-0 ${
-            downloaded
-              ? 'bg-emerald-600 text-white'
-              : 'bg-blue-600 hover:bg-blue-700 text-white active:scale-95'
-          } disabled:opacity-60 disabled:cursor-not-allowed`}
-        >
-          {isDownloading ? (
-            <>
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              Generando...
-            </>
-          ) : downloaded ? (
-            <>
-              <Check className="w-3.5 h-3.5" />
-              Descargado
-            </>
-          ) : (
-            <>
-              <Download className="w-3.5 h-3.5" />
-              Descargar Imagen
-            </>
-          )}
-        </button>
+        {/* Controles: Input de Correo + Botón Enviar + Botón Descargar Imagen */}
+        <div className="flex flex-wrap items-center gap-2">
+          <form
+            onSubmit={handleSendSingleEmail}
+            className="flex items-center gap-1.5 flex-1 sm:flex-initial"
+          >
+            <div className="relative flex-1 sm:w-60">
+              <Mail className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="email"
+                value={driverEmail || ''}
+                onChange={(e) => {
+                  setEmailError('');
+                  onEmailChange(driver.codigo, e.target.value);
+                }}
+                placeholder="correo@conductor.com"
+                className="w-full pl-8 pr-2.5 py-1.5 text-xs rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={isSendingEmail}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all shadow-sm shrink-0 ${
+                emailSent
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-indigo-600 hover:bg-indigo-700 text-white active:scale-95'
+              } disabled:opacity-60 disabled:cursor-not-allowed`}
+            >
+              {isSendingEmail ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  Enviando...
+                </>
+              ) : emailSent ? (
+                <>
+                  <Check className="w-3.5 h-3.5" />
+                  Correo Enviado
+                </>
+              ) : (
+                <>
+                  <Send className="w-3.5 h-3.5" />
+                  Enviar por Correo
+                </>
+              )}
+            </button>
+          </form>
+
+          <button
+            type="button"
+            onClick={handleDownloadSingle}
+            disabled={isDownloading}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all shadow-sm shrink-0 ${
+              downloaded
+                ? 'bg-emerald-600 text-white'
+                : 'bg-blue-600 hover:bg-blue-700 text-white active:scale-95'
+            } disabled:opacity-60 disabled:cursor-not-allowed`}
+          >
+            {isDownloading ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Generando...
+              </>
+            ) : downloaded ? (
+              <>
+                <Check className="w-3.5 h-3.5" />
+                Descargado
+              </>
+            ) : (
+              <>
+                <Download className="w-3.5 h-3.5" />
+                Descargar Imagen
+              </>
+            )}
+          </button>
+        </div>
       </div>
+
+      {/* Aviso de error de correo en la tarjeta si ocurre */}
+      {emailError && (
+        <div className="px-4 py-2 bg-rose-50 border-b border-rose-200 flex items-center gap-2 text-xs text-rose-700">
+          <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+          <span>{emailError}</span>
+        </div>
+      )}
 
       {/* Contenedor con scroll horizontal suave en pantallas pequeñas */}
       <div className="overflow-x-auto p-4 flex justify-center bg-slate-100">

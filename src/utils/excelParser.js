@@ -179,6 +179,16 @@ export async function parseScheduleExcel(file) {
     const nombre = String(row[2] ?? '').trim();
     const extremo = String(row[4] ?? '').trim();
 
+    // Detectar si alguna columna adicional (ej. col 3, 5 o 27+) incluye un correo electrónico
+    let detectedEmail = '';
+    for (const cell of row) {
+      const cellStr = String(cell ?? '').trim();
+      if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cellStr)) {
+        detectedEmail = cellStr;
+        break;
+      }
+    }
+
     // Ignorar filas completamente vacías
     if (!codigo && !nombre) continue;
 
@@ -220,6 +230,7 @@ export async function parseScheduleExcel(file) {
       rut,
       nombre: nombre || 'CONDUCTOR SIN NOMBRE',
       extremo: extremo || 'Santa Marta',
+      email: detectedEmail,
       schedule,
     });
   }

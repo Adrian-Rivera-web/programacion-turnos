@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import html2canvas from 'html2canvas';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
@@ -15,9 +15,17 @@ import {
   Loader2,
   Users,
   CheckCircle2,
+  Mail,
+  Send,
+  Settings,
+  X,
+  KeyRound,
 } from 'lucide-react';
 import ScheduleCard from './components/ScheduleCard';
 import { parseScheduleExcel, downloadSampleExcel } from './utils/excelParser';
+
+const STORAGE_EMAILS_KEY = 'turnos_driver_emails_v1';
+const STORAGE_SMTP_KEY = 'turnos_smtp_config_v1';
 
 export default function App() {
   const [drivers, setDrivers] = useState([]);
@@ -30,13 +38,59 @@ export default function App() {
   const [error, setError] = useState('');
   const [isProcessingFile, setIsProcessingFile] = useState(false);
 
+  // Diccionario de correos por código de conductor (persistido en localStorage)
+  const [driverEmails, setDriverEmails] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_EMAILS_KEY);
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  // Configuración SMTP remitente (Gmail + Contraseña de Aplicación)
+  const [smtpConfig, setSmtpConfig] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_SMTP_KEY);
+      return saved
+        ? JSON.parse(saved)
+        : { smtpUser: '', smtpPass: '', senderName: 'Programación de Turnos' };
+    } catch {
+      return { smtpUser: '', smtpPass: '', senderName: 'Programación de Turnos' };
+    }
+  });
+  const [isSmtpModalOpen, setIsSmtpModalOpen] = useState(false);
+
   // Estado para descarga masiva en ZIP
   const [isZipping, setIsZipping] = useState(false);
   const [zipProgress, setZipProgress] = useState({ current: 0, total: 0 });
 
+  // Estado para envío masivo de correos
+  const [isSendingAllEmails, setIsSendingAllEmails] = useState(false);
+  const [emailBulkProgress, setEmailBulkProgress] = useState({
+    current: 0,
+    total: 0,
+  });
+
   // Mapa de referencias DOM de cada tarjeta para captura masiva
   const cardRefsMap = useRef(new Map());
   const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_EMAILS_KEY, JSON.stringify(driverEmails));
+    } catch {
+      // ignore storage quota errors
+    }
+  }, [driverEmails]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_SMTP_KEY, JSON.stringify(smtpConfig));
+    } catch {
+      // ignore storage errors
+    }
+  }, [smtpConfig]);
 
   const registerCardRef = (driverId, element) => {
     if (element) {
@@ -44,6 +98,13 @@ export default function App() {
     } else {
       cardRefsMap.current.delete(driverId);
     }
+  };
+
+  const handleEmailChange = (codigo, emailValue) => {
+    setDriverEmails((prev) => ({
+      ...prev,
+      [codigo]: emailValue,
+    }));
   };
 
   const handleFileProcess = async (file) => {
@@ -67,6 +128,17 @@ export default function App() {
 
       setDrivers(parsedDrivers);
       setFileName(file.name);
+
+      // Si el Excel traía correos en alguna columna, guardarlos en el mapa
+      setDriverEmails((prev) => {
+        const next = { ...prev };
+        for (const d of parsedDrivers) {
+          if (d.email && !next[d.codigo]) {
+            next[d.codigo] = d.email;
+          }
+        }
+        return next;
+      });
 
       if (detectedDateRange) {
         setDateRange(detectedDateRange);
@@ -132,6 +204,116 @@ export default function App() {
     );
   }, [drivers, searchTerm]);
 
+  // Conductores visibles que tienen un correo asignado
+  const driversWithEmail = useMemo(() => {
+    return filteredDrivers.filter((d) => {
+      const email = (driverEmails[d.codigo] || '').trim();
+      return email.includes('@');
+    });
+  }, [filteredDrivers, driverEmails]);
+
+  // Función que llama a /api/send-email para enviar la programación por correo
+  const sendScheduleEmailRequest = async ({
+    to,
+    driver,
+    location,
+    imageBase64,
+  }) => {
+    const response = await fetch('/api/send-email', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        to,
+        driver,
+        dateRange,
+        location,
+        imageBase64,
+        smtpUser: smtpConfig.smtpUser,
+        smtpPass: smtpConfig.smtpPass,
+        senderName: smtpConfig.senderName,
+      }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      // Si falta configurar el remitente, abrir el modal de configuración
+      if (data.error && data.error.includes('Configurar Correo')) {
+        setIsSmtpModalOpen(true);
+      }
+      throw new Error(data.error || 'Error al enviar el correo electrónico.');
+    }
+
+    return data;
+  };
+
+  // Enviar por correo a todos los conductores que tengan correo escrito
+  const handleSendAllEmails = async () => {
+    if (driversWithEmail.length === 0 || isSendingAllEmails) return;
+
+    setIsSendingAllEmails(true);
+    setEmailBulkProgress({ current: 0, total: driversWithEmail.length });
+
+    let sentCount = 0;
+    let firstError = null;
+
+    try {
+      for (let i = 0; i < driversWithEmail.length; i++) {
+        const driver = driversWithEmail[i];
+        const targetEmail = (driverEmails[driver.codigo] || '').trim();
+        setEmailBulkProgress({
+          current: i + 1,
+          total: driversWithEmail.length,
+        });
+
+        const element = cardRefsMap.current.get(driver.id);
+        let imageBase64 = '';
+        if (element) {
+          const canvas = await html2canvas(element, {
+            scale: 2,
+            backgroundColor: '#ffffff',
+            useCORS: true,
+            logging: false,
+            windowWidth: 1200,
+          });
+          imageBase64 = canvas.toDataURL('image/png');
+        }
+
+        const resolvedLocation =
+          useExcelLocation && driver.extremo
+            ? driver.extremo
+            : globalLocation || driver.extremo || 'Santa Marta';
+
+        try {
+          await sendScheduleEmailRequest({
+            to: targetEmail,
+            driver,
+            location: resolvedLocation,
+            imageBase64,
+          });
+          sentCount++;
+        } catch (err) {
+          firstError = err.message;
+          break;
+        }
+      }
+
+      if (firstError) {
+        alert(
+          `Se enviaron ${sentCount} correos. El envío se detuvo por el siguiente error:\n\n${firstError}`
+        );
+      } else {
+        alert(
+          `¡Éxito! Se enviaron las ${sentCount} programaciones por correo electrónico.`
+        );
+      }
+    } finally {
+      setIsSendingAllEmails(false);
+      setEmailBulkProgress({ current: 0, total: 0 });
+    }
+  };
+
   // Descargar todas las tarjetas visibles en un archivo .ZIP
   const handleDownloadAllZip = async () => {
     if (filteredDrivers.length === 0 || isZipping) return;
@@ -191,7 +373,7 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col">
       {/* Header Principal */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-20 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white shadow-sm">
               <FileSpreadsheet className="w-5 h-5" />
@@ -201,46 +383,195 @@ export default function App() {
                 Generador de Tarjetas de Programación
               </h1>
               <p className="text-xs sm:text-sm text-slate-500">
-                Convierte planillas Excel de turnos en tarjetas PNG listas para
-                enviar a cada conductor
+                Convierte planillas Excel de turnos en tarjetas PNG o envíalas
+                directamente por correo electrónico
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setIsSmtpModalOpen(true)}
+              type="button"
+              className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors border ${
+                smtpConfig.smtpUser && smtpConfig.smtpPass
+                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100'
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+              }`}
+              title="Configurar cuenta Gmail para envío directo de correos"
+            >
+              <Settings className="w-4 h-4" />
+              {smtpConfig.smtpUser ? 'Correo Configurado' : 'Configurar Correo'}
+            </button>
+
             <button
               onClick={downloadSampleExcel}
               type="button"
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs sm:text-sm font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors border border-slate-200"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs sm:text-sm font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors border border-slate-200"
               title="Descarga un archivo Excel de prueba con la estructura exacta requerida"
             >
               <Sparkles className="w-4 h-4 text-amber-500" />
-              Descargar Excel de Ejemplo
+              Excel de Ejemplo
             </button>
 
             {drivers.length > 0 && (
-              <button
-                onClick={handleDownloadAllZip}
-                disabled={isZipping || filteredDrivers.length === 0}
-                type="button"
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-all disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                {isZipping ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Generando ZIP ({zipProgress.current}/{zipProgress.total})...
-                  </>
-                ) : (
-                  <>
-                    <Download className="w-4 h-4" />
-                    Descargar Todas ({filteredDrivers.length}) en ZIP
-                  </>
-                )}
-              </button>
+              <>
+                <button
+                  onClick={handleSendAllEmails}
+                  disabled={
+                    isSendingAllEmails || driversWithEmail.length === 0
+                  }
+                  type="button"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs sm:text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Envía la programación a todos los conductores que tengan un correo ingresado"
+                >
+                  {isSendingAllEmails ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Enviando ({emailBulkProgress.current}/
+                      {emailBulkProgress.total})...
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-4 h-4" />
+                      Enviar Correos ({driversWithEmail.length})
+                    </>
+                  )}
+                </button>
+
+                <button
+                  onClick={handleDownloadAllZip}
+                  disabled={isZipping || filteredDrivers.length === 0}
+                  type="button"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs sm:text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {isZipping ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      ZIP ({zipProgress.current}/{zipProgress.total})...
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-4 h-4" />
+                      Descargar Todas ({filteredDrivers.length}) en ZIP
+                    </>
+                  )}
+                </button>
+              </>
             )}
           </div>
         </div>
       </header>
+
+      {/* Modal para Configurar Cuenta Gmail / SMTP */}
+      {isSmtpModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <Mail className="w-5 h-5 text-indigo-600" />
+                <h3 className="text-base font-bold text-slate-900">
+                  Configurar Correo Remitente (Gmail)
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsSmtpModalOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Para enviar las tarjetas directamente por correo desde la web,
+              ingresa tu correo de <strong>Gmail</strong> y una{' '}
+              <strong>Contraseña de Aplicación</strong> de Google (16 letras).
+              Tus datos quedan guardados en tu navegador.
+            </p>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Nombre del Remitente
+                </label>
+                <input
+                  type="text"
+                  value={smtpConfig.senderName}
+                  onChange={(e) =>
+                    setSmtpConfig((prev) => ({
+                      ...prev,
+                      senderName: e.target.value,
+                    }))
+                  }
+                  placeholder="Ej: Programación Santa Marta"
+                  className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Tu Correo Gmail Remitente
+                </label>
+                <input
+                  type="email"
+                  value={smtpConfig.smtpUser}
+                  onChange={(e) =>
+                    setSmtpConfig((prev) => ({
+                      ...prev,
+                      smtpUser: e.target.value,
+                    }))
+                  }
+                  placeholder="tucorreo@gmail.com"
+                  className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Contraseña de Aplicación de Google (16 letras)
+                </label>
+                <div className="relative">
+                  <KeyRound className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="password"
+                    value={smtpConfig.smtpPass}
+                    onChange={(e) =>
+                      setSmtpConfig((prev) => ({
+                        ...prev,
+                        smtpPass: e.target.value,
+                      }))
+                    }
+                    placeholder="xxxx xxxx xxxx xxxx"
+                    className="w-full pl-9 pr-3 py-2 text-sm rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Créala gratis en tu cuenta de Google:{' '}
+                  <a
+                    href="https://myaccount.google.com/apppasswords"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-indigo-600 underline font-medium"
+                  >
+                    myaccount.google.com/apppasswords
+                  </a>
+                </p>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsSmtpModalOpen(false)}
+                className="px-4 py-2 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm"
+              >
+                Guardar y Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Contenido Principal */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
@@ -421,24 +752,31 @@ export default function App() {
           </div>
         )}
 
-        {/* Barra de progreso durante la creación del ZIP */}
-        {isZipping && (
+        {/* Barra de progreso durante la creación del ZIP o envío masivo de correos */}
+        {(isZipping || isSendingAllEmails) && (
           <div className="rounded-xl bg-blue-50 border border-blue-200 p-4 space-y-2">
             <div className="flex items-center justify-between text-xs font-semibold text-blue-900">
               <span>
-                Renderizando tarjetas en alta resolución y comprimiendo archivo
-                ZIP...
+                {isZipping
+                  ? 'Renderizando tarjetas en alta resolución y comprimiendo archivo ZIP...'
+                  : 'Generando imágenes y enviando correos electrónicos a los conductores...'}
               </span>
               <span>
-                {zipProgress.current} / {zipProgress.total} (
-                {Math.round((zipProgress.current / zipProgress.total) * 100)}%)
+                {isZipping
+                  ? `${zipProgress.current} / ${zipProgress.total}`
+                  : `${emailBulkProgress.current} / ${emailBulkProgress.total}`}
               </span>
             </div>
             <div className="w-full h-2 bg-blue-200 rounded-full overflow-hidden">
               <div
                 className="h-full bg-blue-600 transition-all duration-200"
                 style={{
-                  width: `${(zipProgress.current / zipProgress.total) * 100}%`,
+                  width: `${
+                    isZipping
+                      ? (zipProgress.current / zipProgress.total) * 100
+                      : (emailBulkProgress.current / emailBulkProgress.total) *
+                        100
+                  }%`,
                 }}
               />
             </div>
@@ -457,8 +795,8 @@ export default function App() {
             <p className="text-sm text-slate-500 max-w-lg mx-auto">
               Sube tu archivo <span className="font-mono">.xlsx</span> en el
               recuadro superior o haz clic en{' '}
-              <strong>&ldquo;Descargar Excel de Ejemplo&rdquo;</strong> para
-              probar inmediatamente la generación y descarga de tarjetas.
+              <strong>&ldquo;Excel de Ejemplo&rdquo;</strong> para probar
+              inmediatamente la generación, descarga y envío por correo.
             </p>
           </div>
         ) : filteredDrivers.length === 0 ? (
@@ -478,6 +816,9 @@ export default function App() {
                 globalLocation={globalLocation}
                 useExcelLocation={useExcelLocation}
                 registerCardRef={registerCardRef}
+                driverEmail={driverEmails[driver.codigo] || ''}
+                onEmailChange={handleEmailChange}
+                onSendEmail={sendScheduleEmailRequest}
               />
             ))}
           </section>
