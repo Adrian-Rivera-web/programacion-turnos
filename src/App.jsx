@@ -48,15 +48,27 @@ export default function App() {
     }
   });
 
-  // Configuración SMTP remitente (Gmail + Contraseña de Aplicación)
+  // Configuración SMTP remitente (Gmail + Contraseña de Aplicación preconfigurada por defecto)
+  const DEFAULT_SMTP_CONFIG = {
+    smtpUser: 'condell2026.metro@gmail.com',
+    smtpPass: 'zlzo vhdi byra lqpj',
+    senderName: 'Programación de Turnos',
+  };
+
   const [smtpConfig, setSmtpConfig] = useState(() => {
     try {
       const saved = localStorage.getItem(STORAGE_SMTP_KEY);
-      return saved
-        ? JSON.parse(saved)
-        : { smtpUser: '', smtpPass: '', senderName: 'Programación de Turnos' };
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          smtpUser: parsed.smtpUser || DEFAULT_SMTP_CONFIG.smtpUser,
+          smtpPass: parsed.smtpPass || DEFAULT_SMTP_CONFIG.smtpPass,
+          senderName: parsed.senderName || DEFAULT_SMTP_CONFIG.senderName,
+        };
+      }
+      return DEFAULT_SMTP_CONFIG;
     } catch {
-      return { smtpUser: '', smtpPass: '', senderName: 'Programación de Turnos' };
+      return DEFAULT_SMTP_CONFIG;
     }
   });
   const [isSmtpModalOpen, setIsSmtpModalOpen] = useState(false);

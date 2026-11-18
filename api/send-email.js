@@ -125,8 +125,19 @@ export default async function handler(req, res) {
       });
     }
 
-    const user = (smtpUser || process.env.GMAIL_USER || '').trim();
-    const pass = (smtpPass || process.env.GMAIL_APP_PASSWORD || '')
+    const DEFAULT_GMAIL_USER = 'condell2026.metro@gmail.com';
+    const DEFAULT_GMAIL_PASS = 'zlzovhdibyralqpj';
+
+    const user = (
+      smtpUser ||
+      process.env.GMAIL_USER ||
+      DEFAULT_GMAIL_USER
+    ).trim();
+    const pass = (
+      smtpPass ||
+      process.env.GMAIL_APP_PASSWORD ||
+      DEFAULT_GMAIL_PASS
+    )
       .replace(/\s+/g, '')
       .trim();
 
