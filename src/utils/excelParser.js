@@ -43,7 +43,7 @@ export function normalizeTimeValue(val) {
 }
 
 /**
- * Determina si el horario de inicio corresponde a un día LIBRE
+ * Determina si el horario de inicio corresponde a un día sin turno (LIBRE, LICENCIA o VACACIONES)
  */
 export function isDayFree(rawStart) {
   const normalized = normalizeTimeValue(rawStart).toUpperCase();
@@ -58,8 +58,12 @@ export function isDayFree(rawStart) {
     'L. MÉDICA',
     'L.MEDICA',
     'L.MÉDICA',
+    'L MEDICA',
+    'L MÉDICA',
     'LICENCIA',
+    'LIC',
     'VACACIONES',
+    'VAC',
     'DESCANSO',
     'PERMISO',
     'SIN TURNO',
@@ -75,6 +79,42 @@ export function isDayFree(rawStart) {
   }
 
   return false;
+}
+
+/**
+ * Devuelve la etiqueta exacta para la columna DUR cuando el conductor no tiene turno ese día:
+ * - "LICENCIA" si dice L. Medica, Licencia, Lic, etc.
+ * - "VACACIONES" si dice Vac, Vacaciones, etc.
+ * - "LIBRE" en caso contrario (00:00:00 o vacío)
+ */
+export function getFreeDayLabel(rawStart, rawEnd, rawDur) {
+  const combined = [rawStart, rawEnd, rawDur]
+    .map((v) => String(v ?? '').trim().toUpperCase())
+    .join(' ');
+
+  if (
+    combined.includes('LICENCIA') ||
+    combined.includes('L. MEDICA') ||
+    combined.includes('L. MÉDICA') ||
+    combined.includes('L.MEDICA') ||
+    combined.includes('L.MÉDICA') ||
+    combined.includes('L MEDICA') ||
+    combined.includes('L MÉDICA') ||
+    /\bLIC\.?\b/.test(combined) ||
+    /\bLM\b/.test(combined)
+  ) {
+    return 'LICENCIA';
+  }
+
+  if (
+    combined.includes('VACACIONES') ||
+    combined.includes('VACACION') ||
+    /\bVAC\.?\b/.test(combined)
+  ) {
+    return 'VACACIONES';
+  }
+
+  return 'LIBRE';
 }
 
 /**
@@ -218,7 +258,9 @@ export async function parseScheduleExcel(file) {
         isFree: free,
         ini: free ? '' : normalizeTimeValue(rawStart),
         fin: free ? '' : normalizeTimeValue(rawEnd),
-        dur: free ? 'LIBRE' : normalizeTimeValue(rawDur),
+        dur: free
+          ? getFreeDayLabel(rawStart, rawEnd, rawDur)
+          : normalizeTimeValue(rawDur),
         servicio: '',
       };
     });
