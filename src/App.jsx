@@ -1,14 +1,12 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import html2canvas from 'html2canvas';
-import JSZip from 'jszip';
-import { saveAs } from 'file-saver';
 import {
   Upload,
   FileSpreadsheet,
+  FileText,
   Calendar,
   MapPin,
   Search,
-  Download,
   AlertCircle,
   Trash2,
   Sparkles,
@@ -23,6 +21,7 @@ import {
 } from 'lucide-react';
 import ScheduleCard from './components/ScheduleCard';
 import { parseScheduleExcel, downloadSampleExcel } from './utils/excelParser';
+import { generateAllSchedulesPdf } from './utils/pdfGenerator';
 
 const STORAGE_EMAILS_KEY = 'turnos_driver_emails_v1';
 const STORAGE_SMTP_KEY = 'turnos_smtp_config_v1';
@@ -73,9 +72,8 @@ export default function App() {
   });
   const [isSmtpModalOpen, setIsSmtpModalOpen] = useState(false);
 
-  // Estado para descarga masiva en ZIP
-  const [isZipping, setIsZipping] = useState(false);
-  const [zipProgress, setZipProgress] = useState({ current: 0, total: 0 });
+  // Estado para descarga de PDF masivo
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
 
   // Estado para envío masivo de correos
   const [isSendingAllEmails, setIsSendingAllEmails] = useState(false);
@@ -326,59 +324,26 @@ export default function App() {
     }
   };
 
-  // Descargar todas las tarjetas visibles en un archivo .ZIP
-  const handleDownloadAllZip = async () => {
-    if (filteredDrivers.length === 0 || isZipping) return;
+  // Descargar todas las tarjetas visibles en un único archivo .PDF
+  const handleDownloadAllPdf = () => {
+    if (filteredDrivers.length === 0 || isGeneratingPdf) return;
+    setIsGeneratingPdf(true);
 
-    setIsZipping(true);
-    setZipProgress({ current: 0, total: filteredDrivers.length });
-
-    try {
-      const zip = new JSZip();
-      const folderName = `Programacion_${(dateRange || 'Turnos').replace(
-        /[^a-zA-Z0-9_-]/g,
-        '_'
-      )}`;
-      const imgFolder = zip.folder(folderName);
-
-      for (let i = 0; i < filteredDrivers.length; i++) {
-        const driver = filteredDrivers[i];
-        setZipProgress({ current: i + 1, total: filteredDrivers.length });
-
-        const element = cardRefsMap.current.get(driver.id);
-        if (!element) continue;
-
-        const canvas = await html2canvas(element, {
-          scale: 2,
-          backgroundColor: '#ffffff',
-          useCORS: true,
-          logging: false,
-          windowWidth: 1200,
+    setTimeout(() => {
+      try {
+        generateAllSchedulesPdf({
+          drivers: filteredDrivers,
+          dateRange,
+          globalLocation,
+          useExcelLocation,
         });
-
-        const blob = await new Promise((resolve) =>
-          canvas.toBlob(resolve, 'image/png')
-        );
-
-        if (blob) {
-          const safeName = driver.nombre
-            .replace(/[^a-zA-Z0-9ÁÉÍÓÚÑáéíóúñ\s_-]/g, '')
-            .trim()
-            .replace(/\s+/g, '_');
-          const fileNamePng = `Programacion_${driver.codigo}_${safeName}.png`;
-          imgFolder.file(fileNamePng, blob);
-        }
+      } catch (err) {
+        console.error('Error al generar archivo PDF:', err);
+        alert('Ocurrió un error durante la generación del archivo PDF.');
+      } finally {
+        setIsGeneratingPdf(false);
       }
-
-      const zipBlob = await zip.generateAsync({ type: 'blob' });
-      saveAs(zipBlob, `${folderName}.zip`);
-    } catch (err) {
-      console.error('Error al generar archivo ZIP:', err);
-      alert('Ocurrió un error durante la generación del archivo ZIP.');
-    } finally {
-      setIsZipping(false);
-      setZipProgress({ current: 0, total: 0 });
-    }
+    }, 50);
   };
 
   return (
@@ -452,20 +417,20 @@ export default function App() {
                 </button>
 
                 <button
-                  onClick={handleDownloadAllZip}
-                  disabled={isZipping || filteredDrivers.length === 0}
+                  onClick={handleDownloadAllPdf}
+                  disabled={isGeneratingPdf || filteredDrivers.length === 0}
                   type="button"
                   className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs sm:text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-all disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  {isZipping ? (
+                  {isGeneratingPdf ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      ZIP ({zipProgress.current}/{zipProgress.total})...
+                      Generando PDF...
                     </>
                   ) : (
                     <>
-                      <Download className="w-4 h-4" />
-                      Descargar Todas ({filteredDrivers.length}) en ZIP
+                      <FileText className="w-4 h-4" />
+                      Descargar PDF ({filteredDrivers.length})
                     </>
                   )}
                 </button>
@@ -764,19 +729,16 @@ export default function App() {
           </div>
         )}
 
-        {/* Barra de progreso durante la creación del ZIP o envío masivo de correos */}
-        {(isZipping || isSendingAllEmails) && (
+        {/* Barra de progreso durante el envío masivo de correos */}
+        {isSendingAllEmails && (
           <div className="rounded-xl bg-blue-50 border border-blue-200 p-4 space-y-2">
             <div className="flex items-center justify-between text-xs font-semibold text-blue-900">
               <span>
-                {isZipping
-                  ? 'Renderizando tarjetas en alta resolución y comprimiendo archivo ZIP...'
-                  : 'Generando imágenes y enviando correos electrónicos a los conductores...'}
+                Generando imágenes y enviando correos electrónicos a los
+                conductores...
               </span>
               <span>
-                {isZipping
-                  ? `${zipProgress.current} / ${zipProgress.total}`
-                  : `${emailBulkProgress.current} / ${emailBulkProgress.total}`}
+                {emailBulkProgress.current} / {emailBulkProgress.total}
               </span>
             </div>
             <div className="w-full h-2 bg-blue-200 rounded-full overflow-hidden">
@@ -784,10 +746,7 @@ export default function App() {
                 className="h-full bg-blue-600 transition-all duration-200"
                 style={{
                   width: `${
-                    isZipping
-                      ? (zipProgress.current / zipProgress.total) * 100
-                      : (emailBulkProgress.current / emailBulkProgress.total) *
-                        100
+                    (emailBulkProgress.current / emailBulkProgress.total) * 100
                   }%`,
                 }}
               />
